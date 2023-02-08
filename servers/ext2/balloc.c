@@ -9,6 +9,8 @@
  *   June 2010 (Evgeniy Ivanov)
  */
 
+#include <fcntl.h>
+#include "stdio.h"
 #include "fs.h"
 #include <string.h>
 #include <stdlib.h>
@@ -18,10 +20,57 @@
 #include "inode.h"
 #include "super.h"
 #include "const.h"
+#include <MY_CONFIG.h>
+  
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int stoi(char* a,int size){
+    int sum=0;
+    for (int i=0;i<size;i++){
+        sum=sum*10+(a[i]-'0');
+    }
+    return sum;
+}
+struct extent *read_config_file()
+{   
+    struct extent *extents = NULL;
+    int num_extents = 0;
+    char a[10];
+    int j=0,start_block,num_blocks;
+    for(int i=0;MYCONFIG[i]!='\0';i++){
+            
+        if(MYCONFIG[i]!=' '&&MYCONFIG[i]!='_'){
+            a[j++]=MYCONFIG[i];
+            
+        }else if(MYCONFIG[i]==' '){
+
+            a[j]='\0';
+            start_block=stoi(a,j);
+            j=0;
+        }else if (MYCONFIG[i]=='_'){
+            
+            num_extents++;
+            a[j]='\0';
+            num_blocks=stoi(a,j);
+            j=0;
+            extents = realloc(extents, sizeof(struct extent) * num_extents);
+            extents[num_extents - 1].start_block = start_block;
+            extents[num_extents - 1].num_blocks = num_blocks; 
+        }
+    }
+    for(int i=0;i<num_extents;i++){
+        extents[i].num_extents=num_extents;
+    }
+      return extents;
+ 
+}
 
 static block_t alloc_block_bit(struct super_block *sp, block_t origin,
-	struct inode *rip);
+	struct inode *rip, size_t extent_size);
 
 /*===========================================================================*
  *                      discard_preallocated_blocks                          *
@@ -68,96 +117,140 @@ void discard_preallocated_blocks(struct inode *rip)
 /*===========================================================================*
  *                              alloc_block                                  *
  *===========================================================================*/
-block_t alloc_block(struct inode *rip, block_t block)
+block_t alloc_block(struct inode *rip, block_t block, size_t extent_size)
 {
-/* Allocate a block for inode. If block is provided, then use it as a goal:
- * try to allocate this block or his neghbors.
- * If block is not provided then goal is group, where inode lives.
- */
+  printf("ya mama");
   block_t goal;
   block_t b;
   struct super_block *sp = rip->i_sp;
+  block_t start_block = NO_BLOCK;  // start block of the allocated extent
+  size_t blocks_allocated = 0;  // number of blocks allocated in the extent
 
   if (sp->s_rd_only)
-	panic("can't alloc block on read-only filesys.");
+  {
+    panic("can't alloc block on read-only filesys.");
+  }
 
-  /* Check for free blocks. First time discard preallocation,
-   * next time return NO_BLOCK
-   */
+  // Check for free blocks. First time discard preallocation,
+  // next time return NO_BLOCK
   if (!opt.use_reserved_blocks &&
-      sp->s_free_blocks_count <= sp->s_r_blocks_count) {
-	discard_preallocated_blocks(NULL);
-  } else if (sp->s_free_blocks_count <= EXT2_PREALLOC_BLOCKS) {
-	discard_preallocated_blocks(NULL);
+      sp->s_free_blocks_count <= sp->s_r_blocks_count)
+  {
+    discard_preallocated_blocks(NULL);
+  }
+  else if (sp->s_free_blocks_count <= EXT2_PREALLOC_BLOCKS)
+  {
+    discard_preallocated_blocks(NULL);
   }
 
   if (!opt.use_reserved_blocks &&
-      sp->s_free_blocks_count <= sp->s_r_blocks_count) {
-	return(NO_BLOCK);
-  } else if (sp->s_free_blocks_count == 0) {
-	return(NO_BLOCK);
+      sp->s_free_blocks_count <= sp->s_r_blocks_count)
+  {
+    return (NO_BLOCK);
+  }
+  else if (sp->s_free_blocks_count == 0)
+  {
+    return (NO_BLOCK);
   }
 
-  if (block != NO_BLOCK) {
-	goal = block;
-	if (rip->i_preallocation && rip->i_prealloc_count > 0) {
-		/* check if goal is preallocated */
-		b = rip->i_prealloc_blocks[rip->i_prealloc_index];
-		if (block == b || (block + 1) == b) {
-			/* use preallocated block */
-			rip->i_prealloc_blocks[rip->i_prealloc_index] = NO_BLOCK;
-			rip->i_prealloc_count--;
-			rip->i_prealloc_index++;
-			if (rip->i_prealloc_index >= EXT2_PREALLOC_BLOCKS) {
-				rip->i_prealloc_index = 0;
-				ASSERT(rip->i_prealloc_count == 0);
-			}
-			rip->i_bsearch = b;
-			return b;
-		} else {
-			/* probably non-sequential write operation,
-			 * disable preallocation for this inode.
-			 */
-			rip->i_preallocation = 0;
-			discard_preallocated_blocks(rip);
-		}
-	}
-  } else {
-	  int group = (rip->i_num - 1) / sp->s_inodes_per_group;
-	  goal = sp->s_blocks_per_group*group + sp->s_first_data_block;
+  if (block != NO_BLOCK)
+  {
+    goal = block;
+    if (rip->i_preallocation && rip->i_prealloc_count > 0)
+    {
+      // check if goal is preallocated
+      b = rip->i_prealloc_blocks[rip->i_prealloc_index];
+      if (block == b || (block + 1) == b)
+      {
+        // use preallocated block
+        rip->i_prealloc_blocks[rip->i_prealloc_index] = NO_BLOCK;
+        rip->i_prealloc_count--;
+        rip->i_prealloc_index++;
+        if (rip->i_prealloc_index >= EXT2_PREALLOC_BLOCKS)
+        {
+          rip->i_prealloc_index = 0;
+          ASSERT(rip->i_prealloc_count == 0);
+        }
+        rip->i_bsearch = b;
+        return b;
+      }
+      else
+      {
+       rip->i_preallocation = 0;
+discard_preallocated_blocks(rip);
+}
+}
+}
+      else
+    {
+        int group = (rip->i_num - 1) / sp->s_inodes_per_group;
+        goal = sp->s_blocks_per_group * group + sp->s_first_data_block;
+    }
+
+      if (rip->i_preallocation && rip->i_prealloc_count)
+    {
+        ext2_debug("There're preallocated blocks, but they're neither used or freed!");
+    }
+      printf("Block allocated not user extent \n");
+
+      struct extent *extents = read_config_file();
+
+  // Allocate a block from the block bitmap.
+  block = alloc_block_bit(sp, goal, rip, extents[0].num_blocks);
+  if (block == NO_BLOCK)
+  {
+      // No free block available.
+      return NO_BLOCK;
   }
 
-  if (rip->i_preallocation && rip->i_prealloc_count) {
-	ext2_debug("There're preallocated blocks, but they're\
-			neither used or freed!");
-  }
+  // Update the search position in the block bitmap.
+  rip->i_bsearch = block;
 
-  b = alloc_block_bit(sp, goal, rip);
+  // Check if the block we just allocated is within any of the user-defined extents.
+  struct extent *curr = extents;
 
-  if (b != NO_BLOCK)
-	rip->i_bsearch = b;
-
-  return b;
+	for (int i = 0; i < extents[0].num_extents; i++) {
+    if (block >= curr[i].start_block && block < (curr[i].start_block + curr[i].num_blocks)) {
+        start_block = curr[i].start_block;
+		blocks_allocated = curr[i].num_blocks;
+        break;
+    }
 }
 
+  if (blocks_allocated == 0)
+  {
+      // The block is not within a user-defined extent.
+      // Allocate more blocks if needed to form an extent of the desired size.
+      while (blocks_allocated < extent_size)
+      {
+          block = alloc_block_bit(sp, block + 1, rip, extents[0].num_blocks);
+          if (block == NO_BLOCK)
+          {
+              // No more free blocks available.
+              break;
+          }
+          blocks_allocated++;
+      }
+  }
 
+  // Return the start block of the allocated extent.
+  return start_block;
+
+}
 static void check_block_number(block_t block, struct super_block *sp,
 	struct group_desc *gd);
 
 /*===========================================================================*
  *                              alloc_block_bit                              *
  *===========================================================================*/
-static block_t alloc_block_bit(sp, goal, rip)
-struct super_block *sp;		/* the filesystem to allocate from */
-block_t goal;			/* try to allocate near this block */
-struct inode *rip;		/* used for preallocation */
+static block_t alloc_block_bit(struct super_block *sp, block_t goal, struct inode *rip, size_t extent_size)
 {
   block_t block = NO_BLOCK;	/* allocated block */
-  int word;			/* word in block bitmap */
-  bit_t	bit = -1;
   int group;
   char update_bsearch = FALSE;
   int i;
+  int word;
+  word = ((goal - sp->s_first_data_block) % sp->s_blocks_per_group) / FS_BITCHUNK_BITS;
 
   if (goal >= sp->s_blocks_count ||
       (goal < sp->s_first_data_block && goal != 0)) {
@@ -169,10 +262,9 @@ struct inode *rip;		/* used for preallocation */
 	goal = sp->s_bsearch;
 	update_bsearch = TRUE;
   }
-
-  /* Figure out where to start the bit search. */
-  word = ((goal - sp->s_first_data_block) % sp->s_blocks_per_group)
-			/ FS_BITCHUNK_BITS;
+ printf("Bit allocated \n");
+  /* Read the configuration file and parse the contents into a data structure. */
+  struct extent *extents = read_config_file();
 
   /* Try to allocate block at any group starting from the goal's group.
    * First time goal's group is checked from the word=goal, after all
@@ -180,7 +272,6 @@ struct inode *rip;		/* used for preallocation */
    */
   group = (goal - sp->s_first_data_block) / sp->s_blocks_per_group;
   for (i = 0; i <= sp->s_groups_count; i++, group++) {
-	struct buf *bp;
 	struct group_desc *gd;
 
 	if (group >= sp->s_groups_count)
@@ -190,142 +281,106 @@ struct inode *rip;		/* used for preallocation */
 	if (gd == NULL)
 		panic("can't get group_desc to alloc block");
 
-	if (gd->free_blocks_count == 0) {
-		word = 0;
+	if (gd->free_blocks_count == 0)
 		continue;
+
+    /* Iterate over the extents in the linked list and check if the group has a user-defined extent that can be used. */
+    for (int i = 0; i < extents[0].num_extents; i++) {
+  if (extents[i].num_blocks >= extent_size) {
+    /* Allocate a block from the user-defined extent */
+    block = extents[i].start_block;
+    extents[i].start_block += extent_size;
+    extents[i].num_blocks -= extent_size;
+    gd->free_blocks_count -= extent_size;
+    sp->s_free_blocks_count -= extent_size;
+    return block;
+  }
+}
+	/* Otherwise, try to allocate a block from the free block bitmap */
+    struct buf *bp = get_block(sp->s_dev, gd->block_bitmap, NORMAL);
+	int bit = setbit(b_bitmap(bp), sp->s_blocks_per_group, word);
+	if (bit != -1) {
+		block = bit + sp->s_first_data_block +
+				group * sp->s_blocks_per_group;
+		check_block_number(block, sp, gd);
+		lmfs_markdirty(bp);
+		put_block(bp, MAP_BLOCK);
+		gd->free_blocks_count--;
+		sp->s_free_blocks_count--;
+		return block;
 	}
 
-	bp = get_block(sp->s_dev, gd->block_bitmap, NORMAL);
-
-	if (rip->i_preallocation &&
-	    gd->free_blocks_count >= (EXT2_PREALLOC_BLOCKS * 4) ) {
-		/* Try to preallocate blocks */
-		if (rip->i_prealloc_count != 0) {
-			/* kind of glitch... */
-			discard_preallocated_blocks(rip);
-			ext2_debug("warning, discarding previously preallocated\
-				    blocks! It had to be done by another code.");
-		}
-		ASSERT(rip->i_prealloc_count == 0);
-		/* we preallocate bytes only */
-		ASSERT(EXT2_PREALLOC_BLOCKS == sizeof(char)*CHAR_BIT);
-
-		bit = setbyte(b_bitmap(bp), sp->s_blocks_per_group);
-		if (bit != -1) {
-			block = bit + sp->s_first_data_block +
-					group * sp->s_blocks_per_group;
-			check_block_number(block, sp, gd);
-
-			/* We preallocate a byte starting from block.
-			 * First preallocated block will be returned as
-			 * normally allocated block.
-			 */
-			for (i = 1; i < EXT2_PREALLOC_BLOCKS; i++) {
-				check_block_number(block + i, sp, gd);
-				rip->i_prealloc_blocks[i-1] = block + i;
-			}
-			rip->i_prealloc_index = 0;
-			rip->i_prealloc_count = EXT2_PREALLOC_BLOCKS - 1;
-
-			lmfs_markdirty(bp);
-			put_block(bp, MAP_BLOCK);
-
-			gd->free_blocks_count -= EXT2_PREALLOC_BLOCKS;
-			sp->s_free_blocks_count -= EXT2_PREALLOC_BLOCKS;
-			group_descriptors_dirty = 1;
-			return block;
-		}
-	}
-
-        bit = setbit(b_bitmap(bp), sp->s_blocks_per_group, word);
-	if (bit == -1) {
-		if (word == 0) {
-			panic("ext2: allocator failed to allocate a bit in bitmap\
-				with free bits.");
-		} else {
-			word = 0;
-			continue;
-		}
-	}
-
-	block = sp->s_first_data_block + group * sp->s_blocks_per_group + bit;
-	check_block_number(block, sp, gd);
-
-	lmfs_markdirty(bp);
 	put_block(bp, MAP_BLOCK);
-
-	gd->free_blocks_count--;
-	sp->s_free_blocks_count--;
-	group_descriptors_dirty = 1;
-
-	if (update_bsearch && block != -1 && block != NO_BLOCK) {
-		/* We searched from the beginning, update bsearch. */
-		sp->s_bsearch = block;
-	}
-
-	return block;
   }
 
-  return block;
+  return NO_BLOCK;
+  printf("Bit allocated from user-extent \n");
 }
-
-
 /*===========================================================================*
  *                        free_block	                                     *
  *===========================================================================*/
-void free_block(struct super_block *sp, bit_t bit_returned)
+void free_block(struct super_block *sp, block_t block)
 {
-/* Return a block by turning off its bitmap bit. */
-  int group;		/* group number of bit_returned */
-  int bit;		/* bit_returned number within its group */
-  struct buf *bp;
-  struct group_desc *gd;
+    /* Return a block by turning off its bitmap bit. */
+    int group;          /* group number of block */
+    struct group_desc *gd;
 
-  if (sp->s_rd_only)
-	panic("can't free bit on read-only filesys.");
+    if (sp->s_rd_only)
+        panic("can't free bit on read-only filesys.");
 
-  if (bit_returned >= sp->s_blocks_count ||
-      bit_returned < sp->s_first_data_block)
-	panic("trying to free block %d beyond blocks scope.",
-		bit_returned);
+    if (block >= sp->s_blocks_count ||
+        block < sp->s_first_data_block)
+        panic("trying to free block %d beyond blocks scope.", block);
 
-  /* At first search group, to which bit_returned belongs to
-   * and figure out in what word bit is stored.
-   */
-  group = (bit_returned - sp->s_first_data_block) / sp->s_blocks_per_group;
-  bit = (bit_returned - sp->s_first_data_block) % sp->s_blocks_per_group;
+    /* At first search group, to which block belongs to */
+    group = (block - sp->s_first_data_block) / sp->s_blocks_per_group;
 
-  gd = get_group_desc(group);
-  if (gd == NULL)
-	panic("can't get group_desc to alloc block");
+    gd = get_group_desc(group);
+    if (gd == NULL)
+        panic("can't get group_desc to alloc block");
 
-  /* We might be buggy (No way! :P), so check if we deallocate
-   * data block, but not control (system) block.
-   * This should never happen.
-   */
-  if (bit_returned == gd->inode_bitmap || bit_returned == gd->block_bitmap
-      || (bit_returned >= gd->inode_table
-          && bit_returned < (gd->inode_table + sp->s_itb_per_group))) {
-	ext2_debug("ext2: freeing non-data block %d\n", bit_returned);
-	panic("trying to deallocate \
-		system/control block, hardly poke author.");
+    /* We might be buggy (No way! :P), so check if we deallocate
+    * data block, but not control (system) block.
+    * This should never happen.
+    */
+    if (block == gd->inode_bitmap || block == gd->block_bitmap
+        || (block >= gd->inode_table
+            && block < (gd->inode_table + sp->s_itb_per_group))) {
+        ext2_debug("ext2: freeing non-data block %d\n", block);
+        panic("trying to deallocate system/control block, hardly poke author.");
+    }
+
+    /* Read the extent configuration file */
+    struct extent *extents = read_config_file();
+    if (!extents) {
+        /* No user-defined extents, use the block bitmap */
+        struct buf *bp;
+        bp = get_block(sp->s_dev, gd->block_bitmap, NORMAL);
+        if (unsetbit(b_bitmap(bp), block))
+            panic("Tried to free unused block", block);
+
+        lmfs_markdirty(bp);
+        put_block(bp, MAP_BLOCK);
+
+        gd->free_blocks_count++;
+        sp->s_free_blocks_count++;
+
+        group_descriptors_dirty = 1;
+
+        if (block < sp->s_bsearch)
+            sp->s_bsearch = block;
+    } else {
+        /* User-defined extents, search through the array */
+       for (int i = 0; i < extents[0].num_extents; i++) {
+  if (block >= extents[i].start_block && block <= extents[i].start_block + extents[i].num_blocks - 1) {
+    /* Block belongs to this extent, decrement the free block count */
+    extents[i].num_blocks--;
+    gd->free_blocks_count--;
+    sp->s_free_blocks_count--;
+    break;
   }
-
-  bp = get_block(sp->s_dev, gd->block_bitmap, NORMAL);
-
-  if (unsetbit(b_bitmap(bp), bit))
-	panic("Tried to free unused block", bit_returned);
-
-  lmfs_markdirty(bp);
-  put_block(bp, MAP_BLOCK);
-
-  gd->free_blocks_count++;
-  sp->s_free_blocks_count++;
-
-  group_descriptors_dirty = 1;
-
-  if (bit_returned < sp->s_bsearch)
-	sp->s_bsearch = bit_returned;
+}
+    }
 }
 
 
@@ -346,7 +401,9 @@ static void check_block_number(block_t block, struct super_block *sp,
   }
 
   if (block >= sp->s_blocks_count) {
-	panic("ext2: allocator returned blocknum greater, than \
-			total number of blocks.\n");
+	panic("ext2: allocator returned blocknum greater, than total number of blocks.\n");
   }
 }
+
+
+

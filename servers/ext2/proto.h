@@ -12,10 +12,15 @@ struct filp;
 struct inode;
 struct super_block;
 
+struct extent {
+  block_t start_block;  /* start block of the extent */
+  int num_blocks;
+  int num_extents;       /* number of blocks in the extent */
+};
 
 /* balloc.c */
 void discard_preallocated_blocks(struct inode *rip);
-block_t alloc_block(struct inode *rip, block_t goal);
+block_t alloc_block(struct inode *rip, block_t goal, size_t extent);
 void free_block(struct super_block *sp, bit_t bit);
 
 /* ialloc.c */

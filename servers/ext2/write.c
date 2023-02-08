@@ -10,6 +10,7 @@
  *   February 2010 (Evgeniy Ivanov)
  */
 
+#include "stdio.h"
 #include "fs.h"
 #include <string.h>
 #include "buf.h"
@@ -37,7 +38,7 @@ int op;				/* special actions */
  * the double/triple indirect block.
  * It's the only function which should take care about rip->i_blocks counter.
  */
-  int index1, index2, index3; /* indexes in single..triple indirect blocks */
+  int index1 = 0, index2 = 0, index3 = 0; /* indexes in single..triple indirect blocks */
   long excess, block_pos;
   char new_ind = 0, new_dbl = 0, new_triple = 0;
   int single = 0, triple = 0;
@@ -94,7 +95,7 @@ int op;				/* special actions */
 		b3 = rip->i_block[EXT2_TIND_BLOCK];
 		if (b3 == NO_BLOCK && !(op & WMAP_FREE)) {
 		/* Create triple indirect block. */
-			if ( (b3 = alloc_block(rip, rip->i_bsearch) ) == NO_BLOCK) {
+			if ( (b3 = alloc_block(rip, rip->i_bsearch,1) ) == NO_BLOCK) {
 				ext2_debug("failed to allocate tblock near %d\n", rip->i_block[0]);
 				return(ENOSPC);
 			}
@@ -127,7 +128,7 @@ int op;				/* special actions */
 
 	if (b2 == NO_BLOCK && !(op & WMAP_FREE)) {
 	/* Create the double indirect block. */
-		if ( (b2 = alloc_block(rip, rip->i_bsearch) ) == NO_BLOCK) {
+		if ( (b2 = alloc_block(rip, rip->i_bsearch,1) ) == NO_BLOCK) {
 			/* Release triple ind blk. */
 			put_block(bp_tindir, INDIRECT_BLOCK);
 			ext2_debug("failed to allocate dblock near %d\n", rip->i_block[0]);
@@ -170,7 +171,7 @@ int op;				/* special actions */
    * we're freing (WMAP_FREE).
    */
   if (b1 == NO_BLOCK && !(op & WMAP_FREE)) {
-	if ( (b1 = alloc_block(rip, rip->i_bsearch) ) == NO_BLOCK) {
+	if ( (b1 = alloc_block(rip, rip->i_bsearch,1) ) == NO_BLOCK) {
 		/* Release dbl and triple indirect blks. */
 		put_block(bp_dindir, INDIRECT_BLOCK);
 		put_block(bp_tindir, INDIRECT_BLOCK);
@@ -340,7 +341,7 @@ off_t position;			/* file pointer */
 		}
 	}
 
-	if ( (b = alloc_block(rip, goal) ) == NO_BLOCK) {
+	if ( (b = alloc_block(rip, goal,1) ) == NO_BLOCK) {
 		err_code = ENOSPC;
 		return(NULL);
 	}
